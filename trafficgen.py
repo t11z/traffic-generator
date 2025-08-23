@@ -43,8 +43,9 @@ try:
 except Exception:
     ChromeDriverManager = None  # type: ignore
 
-# Global toggle to ignore certificate errors (set via CLI)
+# Global toggles
 IGNORE_CERT_ERRORS = False
+YT_WALLCLOCK = False  # prefer wall-clock progress/finish for YT in headless
 
 @dataclass
 class Target:
@@ -134,17 +135,21 @@ def build_driver(headless: bool, user_agent: Optional[str], ignore_cert_errors: 
         opts.add_argument("--no-default-browser-check")
         opts.add_argument("--disable-default-apps")
         opts.add_argument("--window-size=1280,800")
-        if IGNORE_CERT_ERRORS:
+        # Allow autoplay + keep player active in service contexts
+        opts.add_argument("--autoplay-policy=no-user-gesture-required")
+        opts.add_argument("--mute-audio")
+        # Reduce background throttling effects in headless/service mode
+        opts.add_argument("--disable-background-timer-throttling")
+        opts.add_argument("--disable-backgrounding-occluded-windows")
+        opts.add_argument("--disable-renderer-backgrounding")
+        opts.add_argument("--remote-debugging-port=0")
+        if IGNORE_CERT_ERRORS or ignore_cert_errors:
             opts.add_argument("--ignore-certificate-errors")
             opts.add_argument("--allow-insecure-localhost")
             try:
                 opts.set_capability("acceptInsecureCerts", True)
             except Exception:
                 pass
-        if ignore_cert_errors:
-            opts.add_argument("--ignore-certificate-errors")
-            opts.add_argument("--allow-insecure-localhost")
-            opts.set_capability("acceptInsecureCerts", True)
         user_dir = tmp_root / "profile"
         cache_dir = tmp_root / "cache"
         media_cache_dir = tmp_root / "media-cache"
@@ -154,7 +159,6 @@ def build_driver(headless: bool, user_agent: Optional[str], ignore_cert_errors: 
         opts.add_argument("--profile-directory=Default")
         opts.add_argument(f"--disk-cache-dir={cache_dir}")
         opts.add_argument(f"--media-cache-dir={media_cache_dir}")
-        opts.add_argument("--remote-debugging-port=0")
         if user_agent:
             opts.add_argument(f"--user-agent={user_agent}")
         if Path("/usr/bin/chromium").exists():
@@ -201,15 +205,27 @@ def auto_scroll(driver: webdriver.Chrome, dwell_seconds: int) -> None:
             i = 1
             direction = 1
 
-# --- New: YouTube watch handler ---
+# --- YouTube watch handler (headless hardened) ---
 
 def is_youtube_url(url: str) -> bool:
     u = url.lower()
     return ("youtube.com/watch" in u) or ("youtu.be/" in u)
 
 def watch_youtube_until_end(driver: webdriver.Chrome, max_wait_seconds: int = 3 * 60 * 60) -> None:
+    """Watch a YouTube video until end.
+
+    In headless environments, Chromium may throttle media playback; relying on
+    currentTime alone can show very slow progress. Strategy:
+      1) Start playback muted and keep page "visible" via JS.
+      2) Read duration via YT Player API or <video> fallback.
+      3) Log both wall-clock and player progress every ~15s.
+      4) Finish when player reaches end OR (in headless by default) wall-clock
+         reaches duration + small buffer.
+    """
+
+    # Wait for <video>
     video = None
-    for _ in range(100):
+    for _ in range(150):
         try:
             video = driver.find_element(By.TAG_NAME, "video")
             break
@@ -219,16 +235,51 @@ def watch_youtube_until_end(driver: webdriver.Chrome, max_wait_seconds: int = 3 
         log("YouTube: no <video> element found; fallback to dwell")
         return
 
+    # JS helpers
+    js_get_dur = (
+        "var p=document.querySelector('ytd-player');"
+        "try{ if(p && p.getPlayer){return p.getPlayer().getDuration();} }catch(e){}"
+        "var v=document.querySelector('video'); return v? v.duration : 0;"
+    )
+    js_get_time = (
+        "var p=document.querySelector('ytd-player');"
+        "try{ if(p && p.getPlayer){return p.getPlayer().getCurrentTime();} }catch(e){}"
+        "var v=document.querySelector('video'); return v? v.currentTime : 0;"
+    )
+    js_is_paused = (
+        "var v=document.querySelector('video'); return v? v.paused : false;"
+    )
+    js_play = (
+        "var p=document.querySelector('ytd-player');"
+        "try{ if(p && p.getPlayer){var pl=p.getPlayer(); pl.mute(); pl.playVideo(); return true;} }catch(e){}"
+        "var v=document.querySelector('video'); if(v){v.muted=true; try{v.play();}catch(e){}} return true;"
+    )
+    js_set_rate = (
+        "try{var p=document.querySelector('ytd-player'); if(p&&p.getPlayer){p.getPlayer().setPlaybackRate(1);} }catch(e){}"
+        "var v=document.querySelector('video'); if(v){v.playbackRate=1.0; v.defaultPlaybackRate=1.0;} return true;"
+    )
+    js_unhide = (
+        "try{Object.defineProperty(document,'hidden',{get:()=>false});}catch(e){}"
+        "try{Object.defineProperty(document,'visibilityState',{get:()=> 'visible'});}catch(e){}"
+        "try{document.hasFocus = ()=> true;}catch(e){}"
+        "true;"
+    )
+
+    # Start playback & apply visibility/rate hacks
     try:
-        driver.execute_script("arguments[0].muted = true; arguments[0].play();", video)
+        driver.execute_script(js_unhide)
+        driver.execute_script(js_play)
+        driver.execute_script(js_set_rate)
     except JavascriptException:
         pass
 
+    # Determine duration
     duration = None
-    for _ in range(50):
+    for _ in range(100):
         try:
-            duration = driver.execute_script("return arguments[0].duration;", video)
-            if duration and duration > 0:
+            duration = driver.execute_script(js_get_dur)
+            if duration and float(duration) > 0:
+                duration = float(duration)
                 break
         except Exception:
             pass
@@ -241,27 +292,52 @@ def watch_youtube_until_end(driver: webdriver.Chrome, max_wait_seconds: int = 3 
     log(f"YouTube: video length ~ {int(duration)}s")
 
     start = time.time()
-    last_log = 0.0
+    last_log_wall = start
+    last_time = 0.0
+    target_end = start + float(duration) + 1.0  # wall-clock finish target
+
     while True:
-        if time.time() - start > max_wait_seconds:
+        now = time.time()
+        # safety timeout
+        if now - start > max_wait_seconds:
             log("YouTube: reached safety max_wait, moving on")
             break
         try:
-            current = driver.execute_script("return arguments[0].currentTime;", video)
-            paused = driver.execute_script("return arguments[0].paused;", video)
-            if paused:
+            current = driver.execute_script(js_get_time) or 0.0
+            current = float(current)
+            paused = bool(driver.execute_script(js_is_paused))
+
+            # Recovery if stalled or paused
+            advanced = current - last_time
+            if paused or advanced < 0.25:
                 try:
-                    driver.execute_script("arguments[0].play();", video)
+                    driver.execute_script(js_unhide)
+                    driver.execute_script(js_set_rate)
+                    driver.execute_script(js_play)
                 except Exception:
                     pass
-            if current is not None and duration - float(current) <= 1.0:
+                # simulate user gesture if needed
+                try:
+                    driver.execute_script("document.querySelector('video')?.click();")
+                    driver.execute_script("document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'k'}));")
+                except Exception:
+                    pass
+
+            finished_player = (duration - current) <= 1.0
+            finished_wall = YT_WALLCLOCK and (now >= target_end)
+            if finished_player or finished_wall:
                 log("YouTube: finished")
                 break
-            if current is not None and current - last_log >= 15:
-                log(f"YouTube: progress {current:.0f}/{duration:.0f}s")
-                last_log = current
+
+            # Heartbeat log every ~15s (both wall-clock and player time)
+            if now - last_log_wall >= 15:
+                wall_elapsed = int(now - start)
+                log(f"YouTube: progress wall={wall_elapsed}/{int(duration)}s player={int(current)}/{int(duration)}s")
+                last_log_wall = now
+
+            last_time = current
         except Exception:
-            log("YouTube: video element not accessible; assuming finished")
+            log("YouTube: player not accessible; assuming finished")
             break
         time.sleep(2)
 
@@ -338,6 +414,7 @@ def main() -> None:
     parser.add_argument("--headless", action="store_true", help="Run browser in headless mode (default)")
     parser.add_argument("--headed", action="store_true", help="Run with a visible browser window")
     parser.add_argument("--ignore-cert-errors", action="store_true", help="Ignore SSL/TLS certificate errors (self-signed, untrusted)")
+    parser.add_argument("--yt-wallclock", action="store_true", help="Use wall-clock timing for YouTube progress/finish (recommended in headless)")
     args = parser.parse_args()
 
     headless = True
@@ -346,9 +423,11 @@ def main() -> None:
     elif args.headless:
         headless = True
 
-    # set global toggle for certificate errors
-    global IGNORE_CERT_ERRORS
+    # set globals
+    global IGNORE_CERT_ERRORS, YT_WALLCLOCK
     IGNORE_CERT_ERRORS = args.ignore_cert_errors
+    # Default to wallclock if headless unless explicitly disabled
+    YT_WALLCLOCK = bool(args.yt_wallclock or headless)
 
     cfg = Config.load(Path(args.config) if args.config else None)
     if not cfg.targets:
