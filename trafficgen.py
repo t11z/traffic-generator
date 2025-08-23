@@ -14,6 +14,7 @@ Features
 - Basic random User-Agent rotation (optional)
 - Special handling for YouTube: watch video until finished
 - Graceful shutdown (Ctrl+C)
+- Optional switch to ignore SSL/TLS certificate errors
 """
 import argparse
 import json
@@ -41,6 +42,9 @@ try:
     from webdriver_manager.chrome import ChromeDriverManager  # type: ignore
 except Exception:
     ChromeDriverManager = None  # type: ignore
+
+# Global toggle to ignore certificate errors (set via CLI)
+IGNORE_CERT_ERRORS = False
 
 @dataclass
 class Target:
@@ -114,7 +118,7 @@ def pick_user_agent(pool: List[str]) -> Optional[str]:
 
 # --- Browser build (robust Debian handling) ---
 
-def build_driver(headless: bool, user_agent: Optional[str]) -> webdriver.Chrome:
+def build_driver(headless: bool, user_agent: Optional[str], ignore_cert_errors: bool = False) -> webdriver.Chrome:
     import shutil, tempfile, atexit
     from selenium.webdriver.chrome.service import Service as ChromeService
 
@@ -130,6 +134,17 @@ def build_driver(headless: bool, user_agent: Optional[str]) -> webdriver.Chrome:
         opts.add_argument("--no-default-browser-check")
         opts.add_argument("--disable-default-apps")
         opts.add_argument("--window-size=1280,800")
+        if IGNORE_CERT_ERRORS:
+            opts.add_argument("--ignore-certificate-errors")
+            opts.add_argument("--allow-insecure-localhost")
+            try:
+                opts.set_capability("acceptInsecureCerts", True)
+            except Exception:
+                pass
+        if ignore_cert_errors:
+            opts.add_argument("--ignore-certificate-errors")
+            opts.add_argument("--allow-insecure-localhost")
+            opts.set_capability("acceptInsecureCerts", True)
         user_dir = tmp_root / "profile"
         cache_dir = tmp_root / "cache"
         media_cache_dir = tmp_root / "media-cache"
@@ -193,7 +208,6 @@ def is_youtube_url(url: str) -> bool:
     return ("youtube.com/watch" in u) or ("youtu.be/" in u)
 
 def watch_youtube_until_end(driver: webdriver.Chrome, max_wait_seconds: int = 3 * 60 * 60) -> None:
-    # Wait for <video>
     video = None
     for _ in range(100):
         try:
@@ -205,13 +219,11 @@ def watch_youtube_until_end(driver: webdriver.Chrome, max_wait_seconds: int = 3 
         log("YouTube: no <video> element found; fallback to dwell")
         return
 
-    # Ensure playback (autoplay may be blocked)
     try:
         driver.execute_script("arguments[0].muted = true; arguments[0].play();", video)
     except JavascriptException:
         pass
 
-    # Get duration
     duration = None
     for _ in range(50):
         try:
@@ -284,11 +296,11 @@ def visit(driver: webdriver.Chrome, target: Target) -> None:
 
 # --- Run loop ---
 
-def run_loop(cfg: Config, headless: bool) -> None:
+def run_loop(cfg: Config, headless: bool, ignore_cert_errors: bool) -> None:
     ua = pick_user_agent(cfg.user_agents)
     if ua:
         log(f"Using User-Agent: {ua}")
-    driver = build_driver(headless=headless, user_agent=ua)
+    driver = build_driver(headless=headless, user_agent=ua, ignore_cert_errors=ignore_cert_errors)
 
     def _handle_sigint(signum, frame):
         raise GracefulExit()
@@ -325,6 +337,7 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=None, help="Path to YAML/JSON config file")
     parser.add_argument("--headless", action="store_true", help="Run browser in headless mode (default)")
     parser.add_argument("--headed", action="store_true", help="Run with a visible browser window")
+    parser.add_argument("--ignore-cert-errors", action="store_true", help="Ignore SSL/TLS certificate errors (self-signed, untrusted)")
     args = parser.parse_args()
 
     headless = True
@@ -333,13 +346,17 @@ def main() -> None:
     elif args.headless:
         headless = True
 
+    # set global toggle for certificate errors
+    global IGNORE_CERT_ERRORS
+    IGNORE_CERT_ERRORS = args.ignore_cert_errors
+
     cfg = Config.load(Path(args.config) if args.config else None)
     if not cfg.targets:
         print("No targets configured.")
         sys.exit(1)
 
     log(f"Loaded {len(cfg.targets)} targets.")
-    run_loop(cfg, headless=headless)
+    run_loop(cfg, headless=headless, ignore_cert_errors=args.ignore_cert_errors)
 
 if __name__ == "__main__":
     main()
