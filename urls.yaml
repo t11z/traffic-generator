@@ -1,0 +1,22 @@
+defaults:
+  dwell_seconds: 8
+  interval_seconds: 300
+  jitter_seconds: 10
+  scroll: true
+
+user_agents:
+  - Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36
+  - Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15
+
+targets:
+  - url: https://example.com
+    interval_seconds: 120
+    dwell_seconds: 10
+    jitter_seconds: 15
+    scroll: true
+  - url: https://news.ycombinator.com
+    interval_seconds: 300
+    dwell_seconds: 12
+    scroll: false
+  - url: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+    interval_seconds: 1800
