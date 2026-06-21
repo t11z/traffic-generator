@@ -51,14 +51,17 @@ def _render(state: RunState):
     from rich.text import Text
 
     meta = state.snapshot_meta()
-    table = Table(expand=True)
-    table.add_column("Target", overflow="fold", ratio=3)
-    table.add_column("Status", ratio=1)
-    table.add_column("Activity", ratio=2)
-    table.add_column("Progress", ratio=2)
-    table.add_column("Next", justify="right", ratio=1)
-    table.add_column("Visits", justify="right", ratio=1)
-    table.add_column("Err", justify="right", ratio=1)
+    # Fixed column widths keep the borders perfectly aligned and stable across
+    # refresh frames (with ratio/expand, rich recomputes widths from the content
+    # each frame, so changing activity/url text would make the borders jump).
+    table = Table(expand=False, pad_edge=True)
+    table.add_column("Target", width=44, no_wrap=True, overflow="ellipsis")
+    table.add_column("Status", width=9, no_wrap=True)
+    table.add_column("Activity", width=22, no_wrap=True, overflow="ellipsis")
+    table.add_column("Progress", width=16, no_wrap=True)
+    table.add_column("Next", width=8, justify="right", no_wrap=True)
+    table.add_column("Visits", width=6, justify="right", no_wrap=True)
+    table.add_column("Err", width=5, justify="right", no_wrap=True)
 
     for ts in state.snapshot_targets():
         style = _STATUS_STYLE.get(ts.status, "white")

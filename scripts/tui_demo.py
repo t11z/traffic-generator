@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Render the TUI dashboard with mock data to an SVG "screenshot".
+"""Render the TUI dashboard with mock data to a PNG "screenshot".
 
-Used to generate docs/tui-dashboard.svg for the README. Regenerate with::
+Used to generate docs/tui-dashboard.png for the README. Regenerate with::
 
     python3 scripts/tui_demo.py
+
+Rendering to a raster PNG (rather than embedding rich's SVG) keeps the
+monospace grid pixel-accurate on GitHub, which does not load the external
+web font the SVG references. Requires ``cairosvg`` (doc/dev tooling only, not a
+runtime dependency): ``pip install cairosvg``.
 """
 from __future__ import annotations
 
@@ -78,12 +83,25 @@ def build_mock_state() -> RunState:
 
 
 def main() -> None:
-    out = ROOT / "docs" / "tui-dashboard.svg"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    console = Console(record=True, width=110, file=open("/dev/null", "w"))
+    docs = ROOT / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    # Width must fit the fixed columns (110) + per-column padding + borders.
+    console = Console(record=True, width=134, file=open("/dev/null", "w"))
     console.print(_render(build_mock_state()))
-    console.save_svg(str(out), title="trafficgen --tui")
-    print(f"wrote {out}")
+
+    svg = console.export_svg(title="trafficgen --tui")
+    png_path = docs / "tui-dashboard.png"
+    try:
+        import cairosvg
+
+        cairosvg.svg2png(bytestring=svg.encode("utf-8"), write_to=str(png_path),
+                         output_width=1480)
+        print(f"wrote {png_path}")
+    except Exception as e:  # pragma: no cover - tooling convenience
+        fallback = docs / "tui-dashboard.svg"
+        fallback.write_text(svg, encoding="utf-8")
+        print(f"cairosvg unavailable ({e.__class__.__name__}); wrote {fallback} instead. "
+              f"Install cairosvg to produce the PNG.")
 
 
 if __name__ == "__main__":
