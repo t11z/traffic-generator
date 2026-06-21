@@ -1,22 +1,82 @@
+# Traffic Generator – example configuration
+#
+# Every key under `targets` is optional except `url`. Missing values fall back
+# to `defaults`, then to the built-in defaults. Old configs keep working: if a
+# target has no `actions`, the classic scroll/dwell behaviour is used.
+
 defaults:
   dwell_seconds: 8
   interval_seconds: 300
   jitter_seconds: 10
   scroll: true
+  # New optional knobs (all have safe defaults):
+  page_load_timeout: 60      # seconds before a page load is retried
+  window_size: 1280x800      # browser window (WxH or W,H)
+  max_retries: 3             # page-load attempts before giving up
+  retry_backoff: 2.0         # exponential backoff base between attempts
 
 user_agents:
   - Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36
   - Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15
+  - Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36
 
 targets:
+  # --- Classic targets (scroll/dwell) -------------------------------------
   - url: https://example.com
     interval_seconds: 120
     dwell_seconds: 10
     jitter_seconds: 15
     scroll: true
+
   - url: https://news.ycombinator.com
     interval_seconds: 300
     dwell_seconds: 12
     scroll: false
+
+  # --- Per-target action pipelines ----------------------------------------
+  # Scroll a few times, follow a random same-domain link, then linger.
+  - url: https://en.wikipedia.org/wiki/Special:Random
+    interval_seconds: 240
+    actions:
+      - type: scroll
+        passes: 2
+      - type: click_random_link
+        same_origin: true
+        dwell: 6
+      - type: wait
+        seconds: 4
+        jitter: 3
+
+  # Random walk: hop across several same-domain pages.
+  - url: https://www.gutenberg.org
+    interval_seconds: 600
+    actions:
+      - type: random_walk
+        hops: 3
+        dwell_per_hop: 8
+
+  # Type a query into a search box and submit.
+  - url: https://duckduckgo.com
+    interval_seconds: 900
+    actions:
+      - type: search
+        selector: "input[name=q]"
+        query: selenium traffic generator
+        submit: true
+        dwell: 8
+
+  # --- Site-specific handlers ---------------------------------------------
+  # YouTube: consent is auto-accepted, ads are skipped, video plays to the end.
   - url: https://www.youtube.com/watch?v=dQw4w9WgXcQ
     interval_seconds: 1800
+
+  # Vimeo: plays the embedded <video> to completion.
+  - url: https://vimeo.com/76979871
+    interval_seconds: 1800
+
+  # Infinite-scroll feed (opt-in via explicit handler). Uses dwell_seconds as
+  # the scrolling budget.
+  - url: https://blog.python.org
+    handler: infinite_scroll
+    interval_seconds: 600
+    dwell_seconds: 25

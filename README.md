@@ -1,21 +1,35 @@
 # Traffic Generator
 
-A simple Python-based traffic generator using [Selenium](https://www.selenium.dev/). This tool can periodically visit a configurable list of URLs in a headless (or headed) Chromium browser. It supports randomized dwell times, optional scrolling, and even **special handling for YouTube videos** (plays until the video ends).
+A lightweight Python/[Selenium](https://www.selenium.dev/) traffic generator. It
+periodically visits a configurable list of URLs in a headless (or visible)
+Chromium browser, with randomized dwell times, optional scrolling, **pluggable
+site handlers** (YouTube, Vimeo, Twitch, generic video, infinite scroll),
+**per-target action pipelines**, automatic retries/self-healing, and an optional
+**live TUI dashboard**.
 
-⚠️ **Disclaimer:** This project is intended for testing and educational purposes. Use it responsibly and only on websites you own or have permission to test. Do **not** use it to manipulate analytics, inflate ad impressions, or violate Terms of Service.
+⚠️ **Disclaimer:** Intended for testing and educational purposes. Use it
+responsibly and only on websites you own or have permission to test. Do **not**
+use it to manipulate analytics, inflate ad impressions, or violate Terms of
+Service.
 
 ---
 
 ## Features
 
-- Configurable list of URLs (via YAML or JSON file)
-- Per-target intervals and dwell times
-- Random jitter to avoid strict periodicity
-- Auto-scroll simulation on normal websites
-- User-Agent rotation (optional)
-- **YouTube handler:** watches videos until completion instead of using a fixed dwell time
-- Headless (server-friendly) or headed (visible browser) mode
-- Graceful shutdown with `Ctrl+C`
+- Configurable URL list (YAML or JSON) with per-target intervals, dwell, jitter
+- **Site handlers** chosen automatically by URL (or pinned per target):
+  - `youtube` – accepts cookie consent, **skips ads**, plays the video to the end
+  - `vimeo`, `twitch`, `generic_video` – play an HTML5 `<video>` to completion
+  - `infinite_scroll` – repeatedly scroll a feed to trigger lazy loading
+  - `default` – classic scroll/dwell (used when nothing else matches)
+- **Per-target actions**: `scroll`, `wait`, `click_random_link`, `random_walk`,
+  `search` – composed into a pipeline per target
+- **Reliability**: page-load retries with exponential backoff, automatic browser
+  rebuild after a crashed session, configurable timeouts and window size
+- **TUI dashboard** (`rich`): live table of every target (status, progress,
+  next run, visit/error counts) plus a scrolling log panel
+- Headless (server-friendly) or headed mode; User-Agent rotation
+- Graceful shutdown with `Ctrl+C`; `--once` mode for smoke tests/CI
 
 ---
 
@@ -25,74 +39,152 @@ A simple Python-based traffic generator using [Selenium](https://www.selenium.de
 - Chromium or Chrome + matching `chromedriver`
 - Dependencies:
   ```bash
-  pip install selenium webdriver-manager pyyaml
+  pip install -r requirements.txt
+  # or, minimal runtime only:
+  pip install selenium pyyaml
+  # optional live dashboard:
+  pip install rich
   ```
-  (On Debian/Ubuntu you may also install via `apt install chromium chromium-driver python3-yaml`)
+  On Debian/Ubuntu you can also use system packages:
+  `apt install chromium chromium-driver python3-yaml`.
 
 ---
 
 ## Usage
 
-1. Clone the repository and create a configuration file (`urls.yaml`). Example:
-   ```yaml
-   defaults:
-     dwell_seconds: 15
-     interval_seconds: 300
-     jitter_seconds: 10
-     scroll: true
+Create a config file (see `urls.yaml` for a fully commented example), then run:
 
-   user_agents:
-     - Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36
-     - Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/115.0
+```bash
+# Headless (default). Plain stdout logging unless a TTY + rich is detected.
+python3 trafficgen.py --config urls.yaml --headless
 
-   targets:
-     - url: https://example.com
-       interval_seconds: 120
-       dwell_seconds: 10
+# Visible browser (needs X11/GUI or xvfb-run):
+python3 trafficgen.py --config urls.yaml --headed
 
-     - url: https://news.ycombinator.com
-       interval_seconds: 600
-       dwell_seconds: 20
-       scroll: false
+# Live dashboard:
+python3 trafficgen.py --config urls.yaml --tui
 
-     - url: https://www.youtube.com/watch?v=dQw4w9WgXcQ
-       interval_seconds: 1800
-       # dwell_seconds is ignored for YouTube
-   ```
+# Visit each target once and exit (smoke/CI):
+python3 trafficgen.py --config urls.yaml --once --no-tui
+```
 
-2. Run the generator:
-   ```bash
-   python3 trafficgen.py --config urls.yaml --headless
-   ```
+### Command-line flags
 
-   For visible browser windows (requires X11/GUI or `xvfb-run`):
-   ```bash
-   python3 trafficgen.py --config urls.yaml --headed
-   ```
+| Flag | Purpose |
+|------|---------|
+| `--config PATH` | YAML/JSON config file |
+| `--headless` / `--headed` | Headless (default) or visible browser |
+| `--tui` / `--no-tui` | Force / disable the live dashboard (default: auto on an interactive TTY when `rich` is installed) |
+| `--ignore-cert-errors` | Ignore SSL/TLS certificate errors |
+| `--yt-wallclock` | Use wall-clock timing for YouTube finish (auto-enabled in headless) |
+| `--max-retries N` | Page-load retry attempts (default 3) |
+| `--page-load-timeout S` | Page load timeout in seconds (default 60) |
+| `--window-size WxH` | Browser window size (default 1280x800) |
+| `--once` | Visit each target once, then exit |
+| `--log-file PATH` | Also append log lines to a file |
 
 ---
 
-## YouTube Handler Explained
+## Configuration
 
-Normal targets use a fixed `dwell_seconds` (stay on the page, possibly auto-scroll, then move on). YouTube, however, needs special logic:
+```yaml
+defaults:
+  dwell_seconds: 8
+  interval_seconds: 300
+  jitter_seconds: 10
+  scroll: true
+  page_load_timeout: 60      # optional
+  window_size: 1280x800      # optional
+  max_retries: 3             # optional
 
-- Detects if the target URL is a YouTube video (`youtube.com/watch` or `youtu.be/...`).
-- Accepts consent dialogs when present.
-- Locates the `<video>` element on the page.
-- Starts playback automatically (muted, if needed) to bypass autoplay restrictions.
-- Reads the video `duration` and repeatedly checks `currentTime`.
-- Keeps the tab open until the video ends (or a safety timeout is reached).
-- Logs progress every ~15 seconds.
+user_agents:
+  - Mozilla/5.0 ...
 
-This way, YouTube videos are always played in full, rather than cut short by an arbitrary timer.
+targets:
+  # Classic target (scroll/dwell) – unchanged, fully backward compatible
+  - url: https://example.com
+    interval_seconds: 120
+    dwell_seconds: 10
+
+  # Action pipeline
+  - url: https://en.wikipedia.org/wiki/Special:Random
+    actions:
+      - type: scroll
+        passes: 2
+      - type: click_random_link
+        same_origin: true
+      - type: wait
+        seconds: 4
+        jitter: 3
+
+  # Pinned site handler
+  - url: https://blog.python.org
+    handler: infinite_scroll
+    dwell_seconds: 25
+```
+
+### Per-target keys
+
+- `url` (required), `interval_seconds`, `dwell_seconds`, `jitter_seconds`, `scroll`
+- `handler` – pin a handler by name (`youtube`, `vimeo`, `twitch`,
+  `generic_video`, `infinite_scroll`, `default`). Omit to auto-detect by URL.
+- `actions` – a list of action steps run during the visit (see below).
+
+### Actions
+
+| Type | Key params |
+|------|-----------|
+| `scroll` | `passes`, `dwell` |
+| `wait` | `seconds`, `jitter` |
+| `click_random_link` | `same_origin`, `dwell` |
+| `random_walk` | `hops`, `dwell_per_hop`, `same_domain` |
+| `search` | `selector`, `query`, `submit`, `dwell` |
+
+If a target has no `actions`, the legacy scroll/dwell behaviour is used, so
+existing configs are unaffected.
 
 ---
 
-## Notes
+## YouTube handling
 
-- The script creates a temporary browser profile each run to avoid profile lock conflicts.
-- For headless servers, always use `--headless` or wrap with `xvfb-run` if you need `--headed`.
-- Supports Linux; should also work on macOS and Windows with minimal changes.
+YouTube needs special logic, all built into the `youtube` handler:
+
+- Detects YouTube video URLs (`youtube.com/watch`, `youtu.be/...`).
+- **Auto-accepts the cookie-consent dialog** (including consent iframes).
+- **Detects and skips ads**; ad time is not counted toward progress.
+- Plays the video muted, defeating autoplay restrictions and headless
+  visibility throttling via JS hacks.
+- Finishes when the player reaches the end **or** (default in headless)
+  wall-clock time reaches the video duration, so headless playback no longer
+  hangs when media is throttled.
+
+---
+
+## Architecture
+
+The code is a small package so the pure logic is unit-testable without a browser:
+
+```
+trafficgen.py            # entry-point shim
+trafficgen/
+  config.py  urlmatch.py  state.py  scheduler.py  driver.py
+  logging_util.py  browser_helpers.py  cli.py  tui.py
+  handlers/  (youtube, vimeo, twitch, generic_video, infinite_scroll, default)
+  actions/   (scroll, wait, click_random_link, random_walk, search)
+```
+
+A single worker thread owns the browser and the scheduler; in TUI mode the main
+thread renders the dashboard from a thread-safe state snapshot.
+
+---
+
+## Tests
+
+```bash
+pip install pytest
+pytest                 # pure unit tests (no browser)
+pytest -m selenium     # optional end-to-end smoke test (needs a real browser)
+```
 
 ---
 
