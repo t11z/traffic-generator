@@ -12,6 +12,11 @@ responsibly and only on websites you own or have permission to test. Do **not**
 use it to manipulate analytics, inflate ad impressions, or violate Terms of
 Service.
 
+![Live TUI dashboard](docs/tui-dashboard.svg)
+
+*The optional `--tui` dashboard: a live table of every target (status, progress,
+next run, visit/error counts) plus a scrolling log panel.*
+
 ---
 
 ## Features
