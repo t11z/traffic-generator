@@ -1,0 +1,5 @@
+{
+  "targets": [
+    {"url": "https://example.com", "interval_seconds": 60, "dwell_seconds": 5}
+  ]
+}

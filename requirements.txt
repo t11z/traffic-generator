@@ -1,0 +1,9 @@
+# Runtime dependencies
+selenium>=4.0
+pyyaml>=5.0
+
+# Optional: live TUI dashboard (enable with --tui)
+rich>=13.0
+
+# Optional: auto-manage chromedriver when system chromedriver is absent
+webdriver-manager>=3.8
