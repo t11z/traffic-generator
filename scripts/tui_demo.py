@@ -5,10 +5,11 @@ Used to generate docs/tui-dashboard.png for the README. Regenerate with::
 
     python3 scripts/tui_demo.py
 
-Rendering to a raster PNG (rather than embedding rich's SVG) keeps the
-monospace grid pixel-accurate on GitHub, which does not load the external
-web font the SVG references. Requires ``cairosvg`` (doc/dev tooling only, not a
-runtime dependency): ``pip install cairosvg``.
+The dashboard is drawn character-by-character onto a fixed monospace grid with
+Pillow. This deliberately bypasses rich's SVG export (which embeds an external
+web font and uses ``textLength``, causing box-drawing characters to drift on
+GitHub). Drawing each cell at ``col * char_width`` with a real monospace font
+keeps every border perfectly aligned. Requires Pillow (dev/doc tooling only).
 """
 from __future__ import annotations
 
@@ -24,6 +25,13 @@ from rich.console import Console  # noqa: E402
 from trafficgen.scheduler import now_utc  # noqa: E402
 from trafficgen.state import RunState, Status  # noqa: E402
 from trafficgen.tui import _render  # noqa: E402
+
+RENDER_WIDTH = 134
+FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
+FONT_SIZE = 20
+BG = (12, 12, 16)
+DEFAULT_FG = (200, 200, 200)
 
 
 def build_mock_state() -> RunState:
@@ -82,26 +90,71 @@ def build_mock_state() -> RunState:
     return st
 
 
+def _fg(style) -> tuple:
+    try:
+        if style is not None and style.color is not None:
+            t = style.color.get_truecolor()
+            return (t.red, t.green, t.blue)
+    except Exception:
+        pass
+    return DEFAULT_FG
+
+
+def _bg(style):
+    try:
+        if style is not None and style.bgcolor is not None:
+            t = style.bgcolor.get_truecolor()
+            return (t.red, t.green, t.blue)
+    except Exception:
+        pass
+    return None
+
+
 def main() -> None:
+    from PIL import Image, ImageDraw, ImageFont
+
     docs = ROOT / "docs"
     docs.mkdir(parents=True, exist_ok=True)
-    # Width must fit the fixed columns (110) + per-column padding + borders.
-    console = Console(record=True, width=134, file=open("/dev/null", "w"))
-    console.print(_render(build_mock_state()))
 
-    svg = console.export_svg(title="trafficgen --tui")
-    png_path = docs / "tui-dashboard.png"
-    try:
-        import cairosvg
+    console = Console(width=RENDER_WIDTH, file=open("/dev/null", "w"))
+    options = console.options.update(width=RENDER_WIDTH)
+    lines = console.render_lines(_render(build_mock_state()), options, pad=True)
 
-        cairosvg.svg2png(bytestring=svg.encode("utf-8"), write_to=str(png_path),
-                         output_width=1480)
-        print(f"wrote {png_path}")
-    except Exception as e:  # pragma: no cover - tooling convenience
-        fallback = docs / "tui-dashboard.svg"
-        fallback.write_text(svg, encoding="utf-8")
-        print(f"cairosvg unavailable ({e.__class__.__name__}); wrote {fallback} instead. "
-              f"Install cairosvg to produce the PNG.")
+    font = ImageFont.truetype(FONT_REGULAR, FONT_SIZE)
+    font_bold = ImageFont.truetype(FONT_BOLD, FONT_SIZE)
+    # Monospace cell metrics from the font itself.
+    cell_w = font.getlength("M")
+    ascent, descent = font.getmetrics()
+    line_h = ascent + descent + 2
+
+    margin = 16
+    img_w = int(round(cell_w * RENDER_WIDTH)) + 2 * margin
+    img_h = line_h * len(lines) + 2 * margin
+    img = Image.new("RGB", (img_w, img_h), BG)
+    draw = ImageDraw.Draw(img)
+
+    for row, segments in enumerate(lines):
+        col = 0
+        y = margin + row * line_h
+        for seg in segments:
+            text = seg.text
+            if not text:
+                continue
+            fg = _fg(seg.style)
+            bg = _bg(seg.style)
+            bold = bool(seg.style and seg.style.bold)
+            f = font_bold if bold else font
+            for ch in text:
+                x = margin + int(round(col * cell_w))
+                if bg is not None:
+                    draw.rectangle([x, y, x + int(round(cell_w)), y + line_h], fill=bg)
+                if ch != " ":
+                    draw.text((x, y), ch, font=f, fill=fg)
+                col += 1
+
+    out = docs / "tui-dashboard.png"
+    img.save(out)
+    print(f"wrote {out} ({img_w}x{img_h})")
 
 
 if __name__ == "__main__":
