@@ -1,0 +1,29 @@
+defaults:
+  dwell_seconds: 8
+  interval_seconds: 300
+  jitter_seconds: 10
+  scroll: true
+  page_load_timeout: 45
+  window_size: 1600x900
+  max_retries: 5
+
+user_agents:
+  - Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36
+
+targets:
+  - url: https://example.com
+    interval_seconds: 120
+    dwell_seconds: 10
+  - url: https://news.ycombinator.com
+    interval_seconds: 300
+    actions:
+      - type: scroll
+        passes: 2
+      - type: click_random_link
+      - type: wait
+        seconds: 3
+  - url: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+    interval_seconds: 1800
+  - url: https://example.org/feed
+    handler: infinite_scroll
+    dwell_seconds: 20
